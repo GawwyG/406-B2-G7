@@ -96,3 +96,99 @@ so RFC 5961's headline protection, aimed at blind/guessing attackers,
 does not apply to this attacker.
 
 Full slide deck: `../406-Project/Design_Report_B2_G7.pdf`.
+
+## How to run
+
+Everything below assumes a Linux environment with Mininet, Open vSwitch,
+Scapy, Flask, and ffmpeg/ffplay available (e.g. WSL2 on Windows), and
+needs root (`sudo`) for the Mininet/OVS steps.
+
+### 1. Bring up the topology
+
+```bash
+cd topology
+sudo python3 topo.py
+```
+Lands at a `mininet>` prompt. Sanity check: `pingall` should show `0%
+dropped`. Open a terminal per host: `xterm h1 h2 h3` (these inherit
+`topology/` as their working directory, since that's where `topo.py`
+was launched from — the paths below account for that).
+
+### 2. Start the stream
+
+In **h3**'s terminal:
+```bash
+cd ../streaming
+python3 server.py
+```
+(If `streaming/video.mp4` doesn't exist yet: `./generate_video.sh` first.)
+
+In **h1**'s terminal:
+```bash
+ffplay http://10.0.2.10:8000/video.mp4
+```
+
+### 3. Give the attacker visibility
+
+From a **normal terminal** at the repo root (not inside a Mininet
+xterm), with the topology still up:
+```bash
+cd attack
+./mirror_enable.sh
+```
+This must be re-run every time the topology is restarted.
+
+### 4. Run the attack
+
+In **h2**'s terminal:
+```bash
+python3 ../attack/attacker.py
+```
+Watch it fire forged RSTs and watch `h1`'s playback die mid-stream.
+
+To just confirm visibility without attacking: `python3 ../attack/sniffer.py`.
+
+### 5. Defense on/off
+
+From a normal terminal at the repo root, topology still up:
+```bash
+cd topology
+./defense_enable.sh    # turn the countermeasure on
+./defense_disable.sh   # turn it back off
+```
+Re-run the attack with the defense on to confirm it now fails (full
+download survives). `sudo ovs-ofctl dump-flows s1` shows the drop rule's
+packet counter climbing as the attacker fires.
+
+### 6. Automated experiments
+
+These build and tear down their own topology — don't run them while
+`topo.py` is already up separately. Run from the repo root:
+
+```bash
+cd experiments
+sudo python3 run_experiments.py --trials 20
+```
+Runs both defense-off and defense-on scenarios, writes `results.csv`,
+prints a success-rate summary. Useful flags: `--wan-bw`, `--scenarios
+off|on|both`, `--out <path>` (see `--help` for the rest).
+
+For a packet-level look at one specific trial (why a shot won or lost):
+```bash
+sudo python3 diagnose_race.py --trials 6
+```
+
+The `results*.csv` files and `logs/` directory in this folder are the
+actual data behind the final report's tables.
+
+### 7. Compile the final report
+
+```bash
+cd report
+pdflatex final_report.tex
+pdflatex final_report.tex   # twice, for the table of contents
+```
+Needs a standard TeX Live install (`beamer`, `tikz`, `booktabs`,
+`listings`, `xcolor` — no external image files, everything is inline
+TikZ). Look for `\screenshot{...}` and `\fillin{...}` in the `.tex` for
+the spots that still need a screenshot or a name/date filled in.
