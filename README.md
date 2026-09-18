@@ -97,11 +97,52 @@ does not apply to this attacker.
 
 Full slide deck: `../406-Project/Design_Report_B2_G7.pdf`.
 
+## Prerequisites (one-time setup)
+
+Tested on **Ubuntu 22.04** (works the same under WSL2 on Windows, or a
+native/VM install). Root (`sudo`) is needed for the Mininet/OVS/`tcpdump`
+steps throughout.
+
+Install everything via `apt` — **not** `pip`. Mininet hosts (and this
+project's scripts) run as root, and a `pip install` without `sudo`
+installs to your own user's site-packages, which root's Python can't
+see (a real, previously-hit failure mode: `ModuleNotFoundError` for a
+package that "is definitely installed").
+
+```bash
+sudo apt update
+sudo apt install -y \
+  mininet openvswitch-switch openvswitch-common \
+  python3-flask python3-scapy \
+  ffmpeg fonts-dejavu-core \
+  xterm curl tcpdump \
+  texlive-latex-extra texlive-pictures texlive-latex-recommended
+```
+
+- `mininet`, `openvswitch-*` — the emulated topology (Section: Topology).
+- `python3-flask` — the streaming server; `python3-scapy` — used only by
+  `attack/sniffer.py` (the passive visibility-check demo script; the
+  actual attack tool, `attacker.py`, uses no packet-crafting library at
+  all, only raw sockets and hand-rolled `struct` code, per the project's
+  "craft your own frame" requirement).
+- `ffmpeg` + `fonts-dejavu-core` — generating the synthetic test video
+  (`streaming/generate_video.sh` burns in a running timestamp using a
+  DejaVu Sans Mono font file).
+- `xterm`, `curl`, `tcpdump` — per-host terminals, the scripted-trial
+  client, and the packet captures `experiments/diagnose_race.py` uses.
+- `texlive-*` — compiling `report/final_report.tex` (plain `article`
+  class with `tikz`, `booktabs`, `listings`, `xcolor`, `hyperref`,
+  `caption`/`subcaption`, `graphicx`, `amsmath`/`amssymb`, `enumitem`,
+  `parskip` — all standard packages covered by the three `texlive-*`
+  packages above; if a package still can't be found, `texlive-full` is
+  the always-safe fallback, just much larger).
+
+`streaming/video.mp4` is already included in this repo (checked in), so
+`generate_video.sh` only needs to be re-run if you want to regenerate it.
+
 ## How to run
 
-Everything below assumes a Linux environment with Mininet, Open vSwitch,
-Scapy, Flask, and ffmpeg/ffplay available (e.g. WSL2 on Windows), and
-needs root (`sudo`) for the Mininet/OVS steps.
+Everything below assumes the prerequisites above are already installed.
 
 ### 1. Bring up the topology
 
@@ -188,7 +229,9 @@ cd report
 pdflatex final_report.tex
 pdflatex final_report.tex   # twice, for the table of contents
 ```
-Needs a standard TeX Live install (`beamer`, `tikz`, `booktabs`,
-`listings`, `xcolor` — no external image files, everything is inline
-TikZ). Look for `\screenshot{...}` and `\fillin{...}` in the `.tex` for
-the spots that still need a screenshot or a name/date filled in.
+A plain `article`-class paper (see the Prerequisites section above for
+the exact `texlive-*` packages needed). The topology diagram is inline
+TikZ, but the evidence figures are real screenshots in `report/Images/`
+— keep that folder alongside the `.tex` file. Search the `.tex` for
+`\fillin{...}` for anything still needing a name, date, or per-member
+contribution description filled in by hand.

