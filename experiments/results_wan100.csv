@@ -1,0 +1,12 @@
+trial,scenario,wan_bw,wan_delay_r1,wan_delay_h3,label,expected_bytes,downloaded_bytes,downloaded_fraction,http_code,curl_time_total,curl_exit,success,attempts_to_kill,time_to_close_s
+1,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.713782,0,False,0,
+2,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.671843,0,False,0,
+3,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.671001,0,False,0,
+4,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.672042,0,False,0,
+5,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.664755,0,False,0,
+6,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.668749,0,False,0,
+7,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.666787,0,False,0,
+8,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.667898,0,False,0,
+9,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.666878,0,False,0,
+10,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.662751,0,False,0,
+11,off,100.0,20ms,5ms,wan100mbit,3985444,3985444,1.0,200,0.662949,0,False,0,
