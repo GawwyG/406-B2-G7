@@ -1,6 +1,6 @@
 # 406-B2-G7 — TCP Reset Attack on Video Streaming
 
-CSE406 (Computer Networks Security) project — assigned tool **#15: TCP
+CSE406 (CSE406: Cyber Security Sessional) project — assigned tool **#15: TCP
 reset attack on video streaming**. Roll 2105094 & 2105104, Section B2,
 Group 7.
 
