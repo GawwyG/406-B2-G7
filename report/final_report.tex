@@ -11,6 +11,7 @@
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{graphicx}
+\usepackage{float}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{enumitem}
@@ -119,10 +120,7 @@ via ARP spoofing, which poisons the ARP caches of the client and its
 gateway so that frames addressed to each other are instead delivered to
 the attacker. \textbf{This project explicitly assumes that this
 precondition has already been satisfied} by the time the attack begins.
-ARP spoofing itself is a separately assigned project tool (Tool \#1),
-and reimplementing it here would duplicate that tool's scope rather than
-demonstrate the RST-specific mechanics this tool is graded on. In the
-emulated topology (Section~\ref{sec:impl}), we reproduce ARP spoofing's
+In the emulated topology (Section~\ref{sec:impl}), we reproduce ARP spoofing's
 \emph{data-plane consequence} -- the attacker being able to see the
 client's traffic -- directly, via a switch port mirror, rather than by
 performing the spoofing itself.
@@ -131,11 +129,9 @@ performing the spoofing itself.
 ordinary HTTP/1.1 streaming service (no custom protocol hardening beyond
 what a standard Linux TCP stack already provides, e.g.\ RFC 5961
 protections, which are discussed explicitly in
-Section~\ref{sec:observed}). Only \emph{Attack A} -- a forged RST
+Section~\ref{sec:observed}). Only the case -- a forged RST
 delivered to the \emph{client}, spoofed as the server -- is implemented
-and evaluated; the converse (spoofing the client toward the server) is
-architecturally straightforward given the same sequence-number-inference
-trick, but is not required and not evaluated here.
+and evaluated; the converse (spoofing the client toward the server) is not required and not evaluated here.
 
 % =======================================================================
 \section{Topology and Implementation}
@@ -148,7 +144,7 @@ The entire topology is emulated in code using Mininet and Open vSwitch
 -- no physical or virtual routers/switches, and no separate virtual
 machines. Figure~\ref{fig:topology} shows the layout.
 
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
 \resizebox{0.9\textwidth}{!}{%
 \begin{tikzpicture}[
@@ -309,9 +305,15 @@ The attack proceeds in the following steps:
 should terminate abnormally -- not via the ordinary graceful
 \texttt{FIN}/\texttt{FIN,ACK} exchange, but via an unexpected
 \texttt{RST} -- part-way through the video, before the full file has
-been transferred. The video player should visibly freeze or report an
-error, and any subsequent playback attempt over the same (now-dead)
-connection should fail. Because the design depends on winning a race
+been transferred. The TCP connection itself dies immediately when the
+forged RST lands, but the player's \emph{visible} freeze is not
+instantaneous: like any progressive-download client, it reads ahead into
+a local buffer faster than it plays the video back, so it keeps
+displaying already-buffered frames at normal speed for a few seconds
+after the kill, and only visibly freezes or errors out once that buffer
+is exhausted and no further data can arrive. Any subsequent playback
+attempt over the same (now-dead) connection should fail immediately.
+Because the design depends on winning a race
 between the attacker's short LAN path and the server's longer,
 WAN-routed path, this outcome is expected \emph{most of the time under
 realistic network conditions}, but is understood from the design stage
@@ -337,7 +339,7 @@ expectation, and why (Section~\ref{sec:diverge}).
 \subsection{Qualitative Observations}
 \label{sec:qual}
 
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
 \begin{subfigure}{0.48\textwidth}
   \includegraphics[width=\linewidth]{Images/h3_terminal_got_206_getrequest.jpg}
@@ -353,7 +355,7 @@ request (left) and the client playing normally (right).}
 \label{fig:before}
 \end{figure}
 
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
 \begin{subfigure}{0.48\textwidth}
   \includegraphics[width=\linewidth]{Images/attacker_firing_rst_pkt.jpg}
@@ -362,15 +364,17 @@ request (left) and the client playing normally (right).}
 \hfill
 \begin{subfigure}{0.48\textwidth}
   \includegraphics[width=\linewidth]{Images/video_player_window_frozen.jpg}
-  \caption{Client: playback frozen at the moment of the attack}
+  \caption{Client: playback frozen once its read-ahead buffer runs out}
 \end{subfigure}
 \caption{The attack: a single forged RST (left, note
-\texttt{attempts=1}) kills the connection, and the client's playback
-freezes at the same moment (right).}
+\texttt{attempts=1}) kills the TCP connection immediately, but the
+client's playback freezes only afterward (right) -- it keeps playing
+normally from data already buffered before the kill, and only visibly
+freezes once that buffer is exhausted.}
 \label{fig:during}
 \end{figure}
 
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
 \includegraphics[width=0.85\textwidth]{Images/successful_attack_h1_terminal.jpg}
 \caption{Victim's own terminal output (\texttt{ffplay}), confirming the
@@ -388,11 +392,11 @@ underlying transfer was severed abnormally partway through the file.}
 [attack] 10.0.1.10:42532 closed itself (flags=R) -- no longer targeting this flow
 RESULT client_port=42532 attempts=1 time_to_close=0.0037872791290283203
 \end{lstlisting}
-A single forged RST killed the connection. The client's own kernel then
-generated a RST of its own back toward the server, for the next
-already-in-flight real segment (arriving for a connection that no longer
-exists locally) -- an independent, attacker-observable confirmation that
-the kill worked, without needing to look at the victim's screen at all.
+A single forged RST killed the connection. The attacker also observed
+the client itself send a RST back to the server shortly after
+(\texttt{closed itself (flags=R)} above) -- confirmation of the kill
+visible without looking at the victim's screen, and consistent with
+standard TCP behavior.
 
 \paragraph{Victim-side output.} The player's own error output on a
 successful attack (Figure~\ref{fig:victim-error}):
@@ -403,13 +407,12 @@ successful attack (Figure~\ref{fig:victim-error}):
 [h264] Invalid NAL unit size (393 > 64).
 [h264] Error splitting the input into NAL units.
 \end{lstlisting}
-Only 678{,}920 of the expected 3{,}985{,}444 bytes ($\approx$17\%)
-were received. This is the player's own confirmation that the underlying
-TCP transfer was severed abnormally, not merely slow -- a slow-but-intact
-download would not produce a ``partial file'' / ``ends prematurely''
-error at all. (When \texttt{curl} is used instead of a GUI player for
-scripted trials, the equivalent signal is a non-zero exit code, e.g.\
-\texttt{56}, ``Recv failure: Connection reset by peer''.)
+Only 678{,}920 of the expected 3{,}985{,}444 bytes ($\approx$17\%) were
+received -- the player's own confirmation of an abnormal severance, not
+just a slow download (which would not produce a ``partial file'' error).
+With \texttt{curl} instead of a GUI player, the equivalent signal is a
+non-zero exit code, e.g.\ \texttt{56}, ``Recv failure: Connection reset
+by peer''.
 
 \paragraph{Server-side output.} The server's own log shows nothing
 unusual:
@@ -417,31 +420,28 @@ unusual:
 [server] 10.0.1.10 GET /video.mp4 Range=bytes=0-
 10.0.1.10 - - [.../Sep/2026 ...] "GET /video.mp4 HTTP/1.1" 206 -
 \end{lstlisting}
-The server keeps sending data into a connection that is already dead
-from the client's perspective, until its own transport-layer
-error/timeout handling eventually notices. This asymmetry -- the
-attacker targets the client, and the server has no direct indication
-anything is wrong -- is a direct consequence of Attack A's design
-(Section~\ref{sec:forge}).
+The server keeps sending into a connection already dead on the
+client's end, until its own timeout logic notices. This asymmetry --
+the attacker targets the client, not the server -- follows directly
+from the attack's design (Section~\ref{sec:forge}).
 
 \subsection{Quantitative Results}
 \label{sec:quant}
 
-To avoid relying on a single anecdotal demo run, we built an automated
-experiment harness that drives the whole topology (server, attacker,
-client) through $N$ repeated trials per condition, with success measured
-objectively -- by comparing downloaded byte count against the video's
-known full size, and by the client's own exit code -- rather than by
-eyeballing a player. Each trial gives the download a head start
-proportional to the estimated total transfer time before starting the
-attacker, modeling an attacker that gains on-path visibility partway
-through an already-flowing stream (as the ARP-spoofing precondition
-would produce in practice), rather than one present since before the TCP
-handshake.
+An automated harness drives the whole topology through $N$ repeated
+trials per condition, avoiding reliance on a single anecdotal demo:
+\begin{itemize}[nosep]
+  \item \textbf{Success is measured objectively} -- downloaded byte
+    count vs.\ known full size, plus the client's exit code -- not by
+    eyeballing playback.
+  \item \textbf{Each trial gives the download a head start} proportional
+    to the estimated total transfer time before starting the attacker,
+    modeling on-path visibility gained partway through an already-flowing
+    stream (as ARP spoofing would produce), not from before the handshake.
+\end{itemize}
 
-Table~\ref{tab:sweep} reports the attack's success rate and mean
-attempts-to-kill across a range of WAN bandwidths (20 trials per
-condition, defense disabled).
+Table~\ref{tab:sweep}: success rate and mean attempts-to-kill across WAN
+bandwidths (20 trials/condition, defense disabled).
 
 \begin{table}[h]
 \centering\small
@@ -461,78 +461,49 @@ WAN bandwidth & Est.\ segment gap & Success rate & Mean attempts \\
 \label{tab:sweep}
 \end{table}
 
-We also captured packets directly on the victim to verify \emph{why}
-the attack wins when it does: converting the forged RST's raw sequence
-number back to the connection's relative byte offset shows it lands
-exactly on the real stream's current boundary every time (never a
-guess), and its arrival consistently precedes the real next segment by
-a small but measurable margin (observed margins: 5.5\,ms, 10\,ms, and
-3.2\,ms across three captured examples) -- a direct, measured
-demonstration of the attacker's short-LAN-path-vs-long-WAN-path
-advantage described in Section~\ref{sec:impl}.
+Packet captures on the victim confirm \emph{why} it wins: the forged
+RST's sequence number lands exactly on the real stream's current byte
+boundary every time (never a guess), arriving 5.5\,ms, 10\,ms, and
+3.2\,ms ahead of the real next segment across three captured examples --
+direct, measured evidence of the LAN-vs-WAN path advantage
+(Section~\ref{sec:impl}).
 
 \subsection{Expected vs.\ Observed Outcome, and Where They Differ}
 \label{sec:diverge}
 
-For the great majority of tested conditions (WAN bandwidths from 1 to
-50\,Mbit/s, which covers everything from a poor mobile connection to a
-high-quality stream), the observed outcome matched the expected outcome
-exactly: the attack succeeded, essentially deterministically, in a
-single shot per trial.
+For 1--50\,Mbit/s (poor mobile to high-quality streaming), observed
+matched expected exactly: deterministic, one-shot success every trial.
+Two divergences are worth reporting, since understanding why is itself
+informative.
 
-Two points are worth reporting explicitly because the observed outcome
-did \emph{not} simply match expectations on the first attempt, and
-understanding why is itself informative.
-
-\paragraph{Divergence 1: implementation latency, not network conditions,
-was the first real bottleneck.}
+\paragraph{Divergence 1: implementation latency, not network
+conditions, was the first bottleneck.}
 \label{sec:latency}
-An initial version of the attacker used a well-known Python packet
-library (Scapy) for both sniffing and crafting packets. Under automated,
-repeated trials, this version showed a puzzling bimodal pattern: some
-connections died in exactly one shot, while others fired 600+ times
-across an entire streaming session and \emph{never} landed a single hit
--- not the smoothly probabilistic behavior the design predicted.
-Packet-level diagnosis (a synchronized capture on the victim, comparing
-the timestamp of each forged RST against the real segment it was racing)
-found the actual cause: Scapy's per-packet object-construction overhead
-was, on average, close to or above the real inter-segment gap on the
-shaped WAN link ($\approx$24\,ms at 1\,Mbit/s). Once a single shot
-happened to be slow, a processing backlog began accumulating and never
-shrank back down -- a textbook unstable queue -- so the attacker ended
-up reacting to progressively staler packets for the rest of the
-connection's life, with reaction latency measured climbing from
-27\,ms to over 16 \emph{seconds} across one losing trial.
+An initial Scapy-based attacker showed a bimodal pattern under repeated
+trials -- some connections died in one shot, others fired 600+ times
+and never landed a hit. A synchronized victim-side capture found why:
+Scapy's per-packet overhead was close to or above the real
+inter-segment gap ($\approx$24\,ms at 1\,Mbit/s), so once one shot was
+slow, a processing backlog formed and never shrank -- a textbook
+unstable queue. Reaction latency climbed from 27\,ms to over 16
+\emph{seconds} across one losing trial.
 
-This was fixed by rewriting the attacker to use raw \texttt{AF\_PACKET}
-sockets with hand-rolled header parsing/construction (avoiding Scapy's
-per-packet overhead), and by always processing the newest queued packet
-rather than the oldest (bounding the worst case to one stale cycle
-instead of an ever-growing backlog). After this fix, measured reaction
-latency dropped to 0.1--10\,ms (typically sub-millisecond), and the
-attack's behavior across repeated trials became the near-deterministic
-one-shot success reported in Table~\ref{tab:sweep}. In short: the
-initial divergence between expected and observed behavior was not a
-flaw in the attack's design, but an artifact of Python/Scapy's
-processing overhead exceeding the available race margin -- once that
-overhead was removed, observed behavior matched the design's prediction.
+\textbf{Fix:} raw \texttt{AF\_PACKET} sockets (no per-packet Scapy
+overhead) plus always processing the newest queued packet, not the
+oldest (bounds the worst case to one stale cycle, not an ever-growing
+backlog). Reaction latency dropped to 0.1--10\,ms, and behavior became
+the near-deterministic one-shot success in Table~\ref{tab:sweep}. The
+divergence was an implementation artifact, not a design flaw --
+removing it made observed behavior match the prediction.
 
 \paragraph{Divergence 2: the race flips at unrealistically high
-bandwidth.} At 100\,Mbit/s, the observed success rate dropped to 0\%
-(0/11 trials) -- the opposite of the near-100\% outcome at every lower
-bandwidth. This is explained directly by the same race-margin model: at
-100\,Mbit/s the real segment gap shrinks to roughly 0.23\,ms, which is
-now comparable to or below the attacker's own (already-optimized)
-processing latency. The attacker's structural, topological advantage
-(one LAN hop vs.\ a router-mediated WAN path) is necessary but not
-sufficient once the legitimate traffic itself is moving faster than the
-attacker's software can plausibly react. This is not a contradiction of
-the attack's design -- the design was explicit from the start that
-success depends on winning a race, not on a guaranteed exploit -- but it
-is a concrete, measured boundary of where that race is actually won or
-lost, and 100\,Mbit/s is well outside the range of realistic video
-streaming bitrates, so it does not undermine the attack's practical
-effectiveness.
+bandwidth.} At 100\,Mbit/s, success dropped to 0\% (0/11) -- the
+opposite of every lower bandwidth. Same race-margin model explains it:
+the segment gap shrinks to $\approx$0.23\,ms, now comparable to the
+attacker's own processing latency, so the topological advantage alone
+is no longer enough. Not a design flaw -- success was always framed as
+winning a race, not a guaranteed exploit -- just a measured boundary,
+and one well outside realistic streaming bitrates.
 
 % =======================================================================
 \section{Defense Mechanism}
@@ -540,16 +511,6 @@ effectiveness.
 % =======================================================================
 
 \subsection{Design}
-
-\paragraph{Rejected approach: router-side ingress filtering.} An initial
-idea was to drop, at the router, any packet claiming to be from the
-server but arriving on the router's LAN-facing interface -- a genuine
-server packet could only arrive via the WAN side. This fails
-\emph{topologically}, not merely as weak policy: the forged RST travels
-attacker $\to$ switch $\to$ client entirely within the LAN, since its
-destination (the client) is on the local subnet. It never reaches the
-router's LAN interface at all, so a router-side rule is not on this
-attack's path and cannot see the malicious packet.
 
 \paragraph{Chosen approach: switch-side IP Source Guard.} Every
 attacker-to-victim frame must physically pass through the shared LAN
@@ -602,7 +563,7 @@ uninterrupted download -- the attacker fired hundreds of forged RSTs per
 trial (since it has no awareness of the defense and simply keeps trying)
 and none of them reached the victim.
 
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
 \begin{subfigure}{0.48\textwidth}
   \includegraphics[width=\linewidth]{Images/defense_on_failedattack_h2_terminal.jpg}
@@ -645,10 +606,10 @@ The threat model and assumptions stated in Section~\ref{sec:threat} bound
 the scope of what was implemented and evaluated. In particular: ARP
 spoofing (the on-path visibility precondition) was assumed already
 satisfied rather than implemented, since it is a separately assigned
-project tool; only Attack A (forged RST to the client) was implemented
-and evaluated, not the converse Attack B; and the attacker deliberately
-never suppresses or delays legitimate traffic, only observes and
-injects.
+project tool; only the forged RST delivered to the client was
+implemented and evaluated, not the converse (spoofing the client toward
+the server instead); and the attacker deliberately never suppresses or
+delays legitimate traffic, only observes and injects.
 
 Within that scope, some further limitations are worth noting. The race
 behavior in Section~\ref{sec:quant} was characterized only for the
@@ -660,10 +621,10 @@ behavior for an \emph{inexact} (guessed, rather than sniffed) sequence
 number was discussed conceptually during design but not separately
 implemented or measured, since our attacker always uses the exact
 sniffed value and so never exercises that code path. Possible
-extensions include implementing Attack B, an off-path sequence-guessing
-variant (to concretely exercise the challenge-ACK path RFC 5961
-provides), and TTL-based anomaly detection as an additional, complementary
-defense layer.
+extensions include the converse attack (spoofing the client toward the
+server), an off-path sequence-guessing variant (to concretely exercise
+the challenge-ACK path RFC 5961 provides), and TTL-based anomaly
+detection as an additional, complementary defense layer.
 
 % =======================================================================
 \section{Conclusion}
@@ -685,15 +646,40 @@ that reduces the attack's success rate from 100\% to 0\%, and confirmed
 that this defense behaves exactly as expected -- deterministically,
 independent of network speed -- across every tested condition.
 
-\bigskip
+
+
+
 \noindent\textbf{Contribution split.}
 \begin{center}
 \begin{tabular}{@{}p{3.2cm}p{9.5cm}@{}}
 \toprule
 Member & Contribution \\
 \midrule
-2105094: Omar Abdur Razzaque & \fillin{describe this member's actual contribution} \\[0.3em]
-2105104: Rubaiyat-E-Zaman & \fillin{describe this member's actual contribution} \\
+2105094: Omar Abdur Razzaque &
+\begin{minipage}[t]{9.5cm}
+\begin{itemize}[leftmargin=*, nosep, topsep=0.3em]
+  \item Project scaffolding and repository setup
+  \item Mininet LAN/WAN topology
+  \item Flask streaming server and test video
+  \item Playback verification and baseline packet capture
+  \item Attacker visibility (OVS mirror + sniffer)
+  \item Attack implementation
+  \item Final Report
+\end{itemize}
+\end{minipage} \\[0.8em]
+\cmidrule{1-2}
+\\[0.8em]
+2105104: Rubaiyat-E-Zaman &
+\begin{minipage}[t]{10.5cm}
+  \begin{itemize}[leftmargin=*, nosep, topsep=0.3em]
+  \item Attack implementation
+  \item Reliability fix (raw-socket rewrite, drain-to-latest)
+  \item Hand-rolled ARP resolution (removed last library dependency)
+  \item Switch-side IP Source Guard defense
+  \item Automated experiments and quantitative trials
+  \item Final report
+\end{itemize}
+\end{minipage} \\[0.3em]
 \bottomrule
 \end{tabular}
 \end{center}
@@ -706,7 +692,6 @@ Member & Contribution \\
 \item RFC 5961 --- Improving TCP's Robustness to Blind In-Window Attacks.
 \item Ishtiaq, Faruk, Hossain --- \emph{TCP Reset Attack on Video Streaming}, NSysS 2019 poster (BUET).
 \item Watson, P. --- \emph{Slipping in the Window: TCP Reset Attacks}.
-\item \fillin{any additional references you used}
 \end{enumerate}
 
 \end{document}
