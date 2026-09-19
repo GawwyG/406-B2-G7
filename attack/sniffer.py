@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
 """
-Step 1 of the attacker: just prove we can see h1's traffic.
+Sanity check: just prove h2 can see h1's traffic. Run with
+mirror_enable.sh already applied and a stream active between h1 and h3.
 
-Run on h2 (attacker), with mirror_enable.sh already applied on s1 and a
-stream in progress between h1 and h3 (see streaming/README.md).
-
-Captures only client (h1) -> server (h3) segments -- i.e. h1's HTTP
-request and its ongoing ACKs while downloading. Per the design report,
-the ACK field of these packets equals the server's next-expected
-sequence number (h1's RCV.NXT for the server's byte stream), which is
-everything the attacker needs later to forge a valid RST "from the
-server". This script does not craft or send any packets yet -- it only
-observes.
+Only sniffs client -> server segments. Their ACK field is the server's
+next-expected sequence number -- exactly what attacker.py needs to
+forge a valid RST later. Doesn't send anything, just observes.
 """
 
 from scapy.all import sniff, TCP, IP
 
-# h2's dedicated monitor interface -- the OVS mirror's output-port (see
-# NOTES_SNIFFING.md). Deliberately NOT h2-eth0: mirroring onto h2's
-# primary, actively-transmitting interface broke its own outgoing
-# traffic entirely, confirmed empirically while debugging attacker.py.
+# h2's monitor interface, not its primary one -- mirroring onto the
+# primary broke its own outgoing traffic.
 IFACE = "h2-eth1"
 CLIENT_IP = "10.0.1.10"
 SERVER_IP = "10.0.2.10"

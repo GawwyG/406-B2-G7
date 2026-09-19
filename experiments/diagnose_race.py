@@ -1,30 +1,21 @@
 #!/usr/bin/env python3
 """
 Diagnostic for the "one-shot success vs. total failure" pattern seen in
-run_experiments.py: some trials kill the connection on the attacker's
-very first forged RST, others fire 600+ times across the whole download
-and never land a single hit -- never something in between. This script
-captures a live packet trace on h1 (the victim) *during* each trial, so
-we can directly see, for a failing trial, exactly how the timing of each
-forged RST compares to the real server segment it was racing against.
+run_experiments.py: some trials die on the very first forged RST, others
+fire 600+ times and never land a hit, never something in between. This
+captures a live trace on h1 during each trial to compare the timing of
+each forged RST against the real server segment it raced against.
 
-Key trick: our forged RSTs claim src=10.0.2.10 (the real server's IP) --
-that's the whole point of the spoof -- so a capture on h1 filtered to
-"src host 10.0.2.10" shows BOTH the real data segments AND our forged
-RSTs, interleaved, in one single trace. They're trivially distinguishable
-by TCP flags: a bare "Flags [R]" with no data is always one of ours (the
-real server never sends a bare RST during normal operation); anything
-else (data segments, plain ACKs) is real server traffic. No separate
-correlation against the attacker's own log is even needed, though we keep
-it too for cross-checking.
+Our forged RSTs claim src=10.0.2.10 (the server's real IP), so a capture
+on h1 filtered to "src host 10.0.2.10" shows both real data and forged
+RSTs in one trace -- a bare "Flags [R]" with no data is always ours,
+since the real server never sends a bare RST in normal operation.
 
 Run with (from anywhere, needs root):
     sudo python3 experiments/diagnose_race.py --trials 6
 
-Stops early once it has captured at least one successful AND one failed
-trial (or after --trials attempts, whichever comes first), then prints a
-merged, millisecond-resolution timeline for the last failed trial
-captured, and tells you where to find the raw traces for the rest.
+Stops early once it has one successful and one failed trial, prints a
+timeline for the last failed one, and points to the raw traces.
 """
 
 import argparse
@@ -69,9 +60,8 @@ def parse_args():
     p.add_argument("--wan-delay-r1", default="20ms")
     p.add_argument("--wan-delay-h3", default="5ms")
     p.add_argument("--head-start-fraction", type=float, default=0.15,
-                    help="fraction of the estimated total transfer time to let the download run "
-                         "before the attacker joins (default: 0.15) -- see run_experiments.py's "
-                         "--head-start-fraction help for why this is a fraction, not fixed seconds")
+                    help="fraction of the estimated transfer time before the attacker joins "
+                         "(default: 0.15) -- see run_experiments.py's flag of the same name")
     return p.parse_args()
 
 
@@ -92,13 +82,10 @@ def analyze_capture(pcap_log_path, attacker_log_path):
     with open(attacker_log_path) as f:
         for line in f:
             if line.startswith("[attack] #"):
-                # attacker.py's own timestamp is wall-clock HH:MM:SS.mmm,
-                # not directly comparable to tcpdump's epoch time unless
-                # we know the date -- skip merging these in directly, the
-                # tcpdump trace alone already shows every forged RST it
-                # actually put on the wire (that's what matters for the
-                # race), the attacker log is just a cross-check that the
-                # counts match.
+                # attacker.py's timestamp is wall-clock HH:MM:SS.mmm, not
+                # directly comparable to tcpdump's epoch time -- the
+                # tcpdump trace alone already shows every RST that hit
+                # the wire, this log is just a cross-check on the count.
                 pass
 
     events.sort(key=lambda e: e[0])

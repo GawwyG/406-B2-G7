@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """
-Minimal HTTP/1.1 progressive-download streaming server.
+Minimal HTTP/1.1 progressive-download streaming server. Serves one video
+file with Range-request support (Flask/Werkzeug's send_file(conditional=True))
+so ffplay/VLC can stream it instead of waiting for a full download.
 
-Serves a single video file with Range-request support (via Flask/Werkzeug's
-send_file(conditional=True)), so players like ffplay/VLC can open it as a
-streaming source rather than waiting for a full download.
-
-Run on h3 (server) inside the Mininet topology:
-    python3 server.py
-
-Listens on 0.0.0.0:8000. Logs every request (with Range header, if present)
-so you can see the client's connection and byte-range progress live during
-the demo -- and see the connection die when the RST attack lands.
+Run on h3: python3 server.py -- listens on 0.0.0.0:8000, logs each
+request's Range header so you can watch the connection die when the RST
+attack lands.
 """
 
 import logging

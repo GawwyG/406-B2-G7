@@ -37,10 +37,8 @@ class LinuxRouter(Node):
 
 
 def build(wan_bw=1, wan_delay_r1='20ms', wan_delay_h3='5ms'):
-    """wan_bw/wan_delay_* parameterize the WAN link's shaping (see below) --
-    defaults match the standard interactive demo; experiments/run_experiments.py
-    sweeps these to study how network conditions affect the attack's race
-    margin."""
+    """Defaults match the interactive demo; run_experiments.py sweeps
+    these to see how network conditions affect the attack's race margin."""
     net = Mininet(switch=OVSSwitch, controller=None, link=TCLink)
 
     info('*** Adding router\n')
@@ -65,28 +63,20 @@ def build(wan_bw=1, wan_delay_r1='20ms', wan_delay_h3='5ms'):
     net.addLink(h2, s1)
     net.addLink(r1, s1, intfName1='r1-eth0')
     # WAN links are bandwidth/delay-limited to emulate a realistic
-    # internet path to the streaming server -- this is the "long path"
-    # the legitimate server response has to take, and it's also what
-    # makes the video actually stream over tens of seconds instead of
-    # downloading instantly, giving the attack a real window to land in.
+    # internet path to the streaming server -- the "long path" the real
+    # server response has to take, and what makes the video stream over
+    # tens of seconds instead of downloading instantly.
     net.addLink(r1, s2, intfName1='r1-eth1', bw=wan_bw, delay=wan_delay_r1)
     net.addLink(h3, s2, bw=wan_bw, delay=wan_delay_h3)
-    # h2's second, dedicated interface (h2-eth1) -- used ONLY as the OVS
-    # mirror's output-port for sniffing h1's traffic (see
-    # attack/NOTES_SNIFFING.md). It gets no IP address. This is added
-    # after every other s1 link so the existing port numbers (s1-eth1=h1,
-    # s1-eth2=h2, s1-eth3=r1) don't shift; this one becomes s1-eth4.
+    # h2's second interface, used only as the OVS mirror's output-port
+    # for sniffing h1's traffic. No IP address. Added last so the
+    # existing port numbers (s1-eth1=h1, s1-eth2=h2, s1-eth3=r1) don't
+    # shift; this one becomes s1-eth4.
     #
-    # It has to be a separate interface from h2-eth0: empirically, making
-    # h2's *primary* two-way interface also the mirror's output-port
-    # broke h2's own outgoing traffic entirely (confirmed via `ping`
-    # failing with the mirror on h2-eth0/s1-eth2, and working again the
-    # instant the mirror was disabled) -- a port apparently can't act as
-    # both a normal actively-transmitting port and a mirror destination
-    # at the same time in this OVS setup. Splitting the roles across two
-    # separate interfaces avoids the conflict: h2-eth0 stays a completely
-    # ordinary port (ARP, sending the forged RSTs), h2-eth1 is purely a
-    # passive listen-only tap.
+    # Has to be separate from h2-eth0: making h2's primary interface
+    # double as the mirror's output-port broke its own outgoing traffic
+    # entirely (a port can't be both actively-transmitting and a mirror
+    # destination here). h2-eth0 stays ordinary, h2-eth1 is a passive tap.
     net.addLink(h2, s1)
 
     net.build()

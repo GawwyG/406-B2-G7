@@ -1,23 +1,17 @@
 #!/bin/bash
-# Enable a switch-side IP Source Guard rule on s1 (the LAN switch).
+# Switch-side IP Source Guard on s1: real switches bind each port to the
+# IP/MAC learned via DHCP snooping and drop ingress frames that don't
+# match. We approximate it with one OVS flow: any frame entering on
+# h2's port claiming to be the server (10.0.2.10, the forged RST's
+# spoofed src) gets dropped before it can reach h1.
 #
-# Real switches implement IP Source Guard by binding each port to the
-# IP/MAC learned via DHCP snooping, then dropping any ingress frame on
-# that port whose source IP doesn't match the binding. We approximate
-# the same effect with an OVS flow rule: h2 (attacker) is only ever
-# allowed to send frames with src IP = its own address (10.0.1.20).
-# Any frame entering on h2's port claiming to be the server
-# (10.0.2.10, used by the forged RST) is dropped before it can reach h1.
-#
-# Run this from inside the Mininet CLI's underlying shell (or a second
-# WSL terminal) while topo.py's network is still up:
+# Run with topo.py's network still up:
 #   ./defense_enable.sh
 
 set -euo pipefail
 
-# NOTE: this is the switch-side (OVS port) name, not the host-side name
-# -- OVS only knows about its own ports. Verify with:
-#   sudo ovs-vsctl list-ports s1
+# Switch-side (OVS port) name, not host-side -- check with
+# `sudo ovs-vsctl list-ports s1` if this ever drifts.
 SWITCH=s1
 ATTACKER_IFACE=s1-eth2  # switch-side end of the link to h2
 SERVER_IP=10.0.2.10
